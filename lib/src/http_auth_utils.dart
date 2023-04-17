@@ -59,9 +59,25 @@ http.Request _copyNormalRequest(http.Request original) {
   return request;
 }
 
-http.BaseRequest copyRequest(http.BaseRequest original) {
+/// Returns a copy of [original]
+http.MultipartRequest _copyMultipartRequest(http.MultipartRequest original, {Iterable<http.MultipartFile>? restoredMultipartFiles}) {
+  var request = http.MultipartRequest(original.method, original.url);
+  request.followRedirects = original.followRedirects;
+  request.headers.addAll(original.headers);
+  request.maxRedirects = original.maxRedirects;
+  request.persistentConnection = original.persistentConnection;
+  request.fields.addAll(original.fields);
+  if (restoredMultipartFiles != null) {
+    request.files.addAll(restoredMultipartFiles);
+  }
+  return request;
+}
+
+http.BaseRequest copyRequest(http.BaseRequest original, {Iterable<http.MultipartFile>? restoredMultipartFiles}) {
   if (original is http.Request) {
     return _copyNormalRequest(original);
+  } else if (original is http.MultipartRequest) {
+    return _copyMultipartRequest(original, restoredMultipartFiles: restoredMultipartFiles);
   } else {
     throw UnimplementedError(
         'cannot handle yet requests of type ${original.runtimeType}');

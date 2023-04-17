@@ -15,6 +15,8 @@ class DigestAuthClient extends http.BaseClient {
 
   final utils.DigestAuth _auth;
 
+  final List<FutureOr<http.MultipartFile> Function()> _multipartFileRestorers = [];
+
   /// Creates a client wrapping [inner] that uses Basic HTTP auth.
   ///
   /// Constructs a new [BasicAuthClient] which will use the provided [username]
@@ -28,6 +30,25 @@ class DigestAuthClient extends http.BaseClient {
     }
   }
 
+  void registerMultipartFileRestorer(FutureOr<http.MultipartFile> Function() restorer, {bool clearFirst = false}) {
+    if (clearFirst) {
+      _multipartFileRestorers.clear();
+    }
+    _multipartFileRestorers.add(restorer);
+  }
+
+  void clearMultipartFileRestorers() {
+    _multipartFileRestorers.clear();
+  }
+
+  Future<List<http.MultipartFile>> _getRestoredFiles() async {
+    var files = <http.MultipartFile>[];
+    for (var fileProvider in _multipartFileRestorers) {
+      files.add(await fileProvider());
+    }
+    return files;
+  }
+
   @override
   Future<http.StreamedResponse> send(http.BaseRequest request) async {
     if (_auth.isReady()) {
@@ -37,7 +58,7 @@ class DigestAuthClient extends http.BaseClient {
     final response = await _inner.send(request);
 
     if (response.statusCode == 401) {
-      final newRequest = utils.copyRequest(request);
+      final newRequest = utils.copyRequest(request, restoredMultipartFiles: await _getRestoredFiles());
       final authInfo =
           response.headers[utils.HttpConstants.headerWwwAuthenticate]!;
       _auth.initFromAuthenticateHeader(authInfo);
