@@ -19,8 +19,8 @@ class HttpConstants {
 }
 
 enum AuthenticationScheme {
-  Basic,
-  Digest,
+  basic,
+  digest,
 }
 
 Map<String, String>? splitAuthenticateHeader(String header) {
@@ -37,6 +37,13 @@ Map<String, String>? splitAuthenticateHeader(String header) {
     ret[kv[0]] = kv.getRange(1, kv.length).join('=').replaceAll('"', '');
   }
   return ret;
+}
+
+String sha256Hash(String data) {
+  var content = const Utf8Encoder().convert(data);
+  var sha256 = crypto.sha256;
+  var digest = sha256.convert(content).toString();
+  return digest;
 }
 
 String md5Hash(String data) {
@@ -92,7 +99,7 @@ String _formatNonceCount(int nc) {
 
 String _computeHA1(String realm, String? algorithm, String username,
     String password, String? nonce, String? cnonce) {
-  if (algorithm == null || algorithm == 'MD5') {
+  if (algorithm == 'MD5') {
     final token1 = '$username:$realm:$password';
     return md5Hash(token1);
   } else if (algorithm == 'MD5-sess') {
@@ -100,6 +107,14 @@ String _computeHA1(String realm, String? algorithm, String username,
     final md51 = md5Hash(token1);
     final token2 = '$md51:$nonce:$cnonce';
     return md5Hash(token2);
+  } else if (algorithm == 'SHA-256') {
+    final token1 = '$username:$realm:$password';
+    return sha256Hash(token1);
+  } else if (algorithm == 'SHA-256-sess') {
+    final token1 = '$username:$realm:$password';
+    final sha256_1 = sha256Hash(token1);
+    final token2 = '$sha256_1:$nonce:$cnonce';
+    return sha256Hash(token2);
   } else {
     throw ArgumentError.value(algorithm, 'algorithm', 'Unsupported algorithm');
   }
@@ -120,18 +135,31 @@ Map<String, String?> computeResponse(
     String password) {
   var ret = <String, String?>{};
 
+  algorithm ??= 'MD5';
   final ha1 = _computeHA1(realm, algorithm, username, password, nonce, cnonce);
 
   String ha2;
 
-  if (qop == 'auth-int') {
-    final bodyHash = md5Hash(body);
-    final token2 = '$method:$path:$bodyHash';
-    ha2 = md5Hash(token2);
+  if (algorithm.startsWith('MD5')) {
+    if (qop == 'auth-int') {
+      final bodyHash = md5Hash(body);
+      final token2 = '$method:$path:$bodyHash';
+      ha2 = md5Hash(token2);
+    } else {
+      // qop in [null, auth]
+      final token2 = '$method:$path';
+      ha2 = md5Hash(token2);
+    }
   } else {
-    // qop in [null, auth]
-    final token2 = '$method:$path';
-    ha2 = md5Hash(token2);
+    if (qop == 'auth-int') {
+      final bodyHash = sha256Hash(body);
+      final token2 = '$method:$path:$bodyHash';
+      ha2 = sha256Hash(token2);
+    } else {
+      // qop in [null, auth]
+      final token2 = '$method:$path';
+      ha2 = sha256Hash(token2);
+    }
   }
 
   final nonceCount = _formatNonceCount(nc);
@@ -149,12 +177,22 @@ Map<String, String?> computeResponse(
   }
   ret['algorithm'] = algorithm;
 
-  if (qop == null) {
-    final token3 = '$ha1:$nonce:$ha2';
-    ret['response'] = md5Hash(token3);
-  } else if (qop == 'auth' || qop == 'auth-int') {
-    final token3 = '$ha1:$nonce:$nonceCount:$cnonce:$qop:$ha2';
-    ret['response'] = md5Hash(token3);
+  if (algorithm.startsWith('MD5')) {
+    if (qop == null) {
+      final token3 = '$ha1:$nonce:$ha2';
+      ret['response'] = md5Hash(token3);
+    } else if (qop == 'auth' || qop == 'auth-int') {
+      final token3 = '$ha1:$nonce:$nonceCount:$cnonce:$qop:$ha2';
+      ret['response'] = md5Hash(token3);
+    }
+  } else {
+    if (qop == null) {
+      final token3 = '$ha1:$nonce:$ha2';
+      ret['response'] = sha256Hash(token3);
+    } else if (qop == 'auth' || qop == 'auth-int') {
+      final token3 = '$ha1:$nonce:$nonceCount:$cnonce:$qop:$ha2';
+      ret['response'] = sha256Hash(token3);
+    }
   }
 
   return ret;
@@ -184,17 +222,23 @@ class DigestAuth {
   }
 
   String getAuthString(String method, Uri url) {
-    final _cnonce = _computeNonce();
+    final cnonce = _computeNonce();
     _nc += 1;
     // if url has query parameters, append query to path
-    final path = url.hasQuery ? url.path + '?' + url.query : url.path;
+    final path = url.hasQuery ? '${url.path}?${url.query}' : url.path;
 
     // after the first request we have the nonce, so we can provide credentials
     final authValues = computeResponse(method, path, '', _algorithm, _qop,
-        _opaque, _realm!, _cnonce, _nonce, _nc, username, password);
+        _opaque, _realm!, cnonce, _nonce, _nc, username, password);
     final authValuesString = authValues.entries
         .where((e) => e.value != null)
-        .map((e) => [e.key, '="', e.value, '"'].join(''))
+        .map((e) => [
+          e.key, 
+          '=', 
+          ['algorithm', 'qop', 'nc'].contains(e.key) ? '' : '"', 
+          e.value, 
+          ['algorithm', 'qop', 'nc'].contains(e.key) ? '' : '"'
+        ].join(''))
         .toList()
         .join(', ');
     final authString = 'Digest $authValuesString';
@@ -225,10 +269,10 @@ AuthenticationScheme? pickSchemeFromAuthenticateHeader(String wwwAuthHeader) {
       .map((e) => e.toLowerCase())
       .toList();
   if (components.any((element) => element == HttpConstants.authSchemeDigest)) {
-    return AuthenticationScheme.Digest;
+    return AuthenticationScheme.digest;
   }
   if (components.any((element) => element == HttpConstants.authSchemeBasic)) {
-    return AuthenticationScheme.Basic;
+    return AuthenticationScheme.basic;
   }
   return null;
 }
